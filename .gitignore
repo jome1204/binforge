@@ -1,0 +1,9 @@
+/build/
+/.local-build/
+/out/
+/*.exe
+/*.obj
+/*.o
+crash-*
+leak-*
+timeout-*
