@@ -481,5 +481,113 @@ private:
   Limits limits_;
 };
 
+struct AddressRange {
+  uint64_t begin = 0;
+  uint64_t end = 0;
+  uint8_t permissions = permission_none;
+  std::string owner;
+  bool contains(uint64_t address) const;
+  bool overlaps(const AddressRange &other) const;
+};
+
+struct SectionMetrics {
+  uint32_t section_index = 0;
+  uint64_t zero_bytes = 0;
+  uint64_t printable_bytes = 0;
+  uint64_t unique_byte_values = 0;
+  double entropy = 0.0;
+  uint32_t checksum = 0;
+  bool likely_code = false;
+  bool likely_compressed = false;
+};
+
+struct ImageMetrics {
+  uint64_t file_size = 0;
+  uint64_t declared_file_bytes = 0;
+  uint64_t declared_memory_bytes = 0;
+  uint64_t executable_bytes = 0;
+  uint64_t writable_bytes = 0;
+  uint64_t zero_fill_bytes = 0;
+  uint32_t named_sections = 0;
+  uint32_t imported_symbols = 0;
+  uint32_t exported_symbols = 0;
+  std::vector<SectionMetrics> sections;
+  std::vector<AddressRange> address_ranges;
+  std::vector<std::string> anomalies;
+};
+
+class ImageAnalyzer {
+public:
+  explicit ImageAnalyzer(Limits limits = {});
+  std::optional<ImageMetrics> analyze(const BinaryImage &image,
+                                      Error &error) const;
+  SectionMetrics analyze_section(const BinaryImage &image,
+                                 const Section &section, Error &error) const;
+
+private:
+  Limits limits_;
+};
+
+struct ControlFlowEdge {
+  uint64_t source = 0;
+  uint64_t target = 0;
+  bool conditional = false;
+  bool call = false;
+  bool fallthrough = false;
+};
+
+struct BasicBlockInfo {
+  uint64_t begin = 0;
+  uint64_t end = 0;
+  uint32_t instruction_count = 0;
+  bool complete = false;
+  std::vector<ControlFlowEdge> outgoing;
+};
+
+struct DisassemblyReport {
+  uint64_t start = 0;
+  uint64_t end = 0;
+  uint64_t bytes_decoded = 0;
+  std::vector<Instruction> instructions;
+  std::vector<BasicBlockInfo> blocks;
+  std::vector<std::string> warnings;
+};
+
+class DisassemblyAnalyzer {
+public:
+  explicit DisassemblyAnalyzer(Limits limits = {});
+  std::optional<DisassemblyReport> analyze(const uint8_t *data, size_t size,
+                                           uint64_t address,
+                                           const Disassembler &decoder,
+                                           Error &error) const;
+
+private:
+  Limits limits_;
+};
+
+struct DependencyNode {
+  std::string library;
+  std::set<std::string> imports;
+  std::set<std::string> exports;
+  std::set<std::string> unresolved;
+};
+
+struct DependencyReport {
+  std::map<std::string, DependencyNode> libraries;
+  std::vector<std::string> duplicate_exports;
+  uint32_t resolved = 0;
+  uint32_t unresolved = 0;
+};
+
+class DependencyAnalyzer {
+public:
+  explicit DependencyAnalyzer(Limits limits = {});
+  DependencyReport analyze(const BinaryImage &image,
+                           const SymbolResolver *resolver = nullptr) const;
+
+private:
+  Limits limits_;
+};
+
 } // namespace binforge
 #endif
