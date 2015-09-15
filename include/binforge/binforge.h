@@ -589,5 +589,106 @@ private:
   Limits limits_;
 };
 
+struct FileAddress {
+  uint64_t file_offset = 0;
+  uint64_t available = 0;
+  uint32_t section_index = 0;
+};
+
+class AddressTranslator {
+public:
+  explicit AddressTranslator(const BinaryImage &image);
+  std::optional<FileAddress> virtual_to_file(uint64_t address,
+                                             uint64_t length = 1) const;
+  std::optional<uint64_t> file_to_virtual(uint64_t offset,
+                                          uint64_t length = 1) const;
+  std::optional<FileAddress> rva_to_file(uint64_t rva,
+                                         uint64_t length = 1) const;
+
+private:
+  const BinaryImage &image_;
+};
+
+struct SymbolLookupResult {
+  const Symbol *symbol = nullptr;
+  uint64_t displacement = 0;
+  bool exact = false;
+};
+
+class SymbolIndex {
+public:
+  explicit SymbolIndex(Limits limits = {});
+  bool build(const BinaryImage &image, Error &error);
+  const Symbol *by_name(std::string_view name) const;
+  const Symbol *by_qualified_name(std::string_view library,
+                                  std::string_view name) const;
+  SymbolLookupResult nearest(uint64_t address) const;
+  std::vector<const Symbol *> prefix(std::string_view prefix,
+                                     size_t maximum) const;
+  void clear();
+
+private:
+  Limits limits_;
+  std::map<std::string, const Symbol *> names_;
+  std::map<std::pair<std::string, std::string>, const Symbol *> qualified_;
+  std::map<uint64_t, const Symbol *> addresses_;
+};
+
+struct RelocationDecodeOptions {
+  Architecture architecture = Architecture::unknown;
+  WordSize word_size = WordSize::bits64;
+  ByteOrder byte_order = ByteOrder::little;
+  uint32_t target_section = 0;
+  uint64_t base_address = 0;
+  uint64_t entry_size = 0;
+  bool explicit_addends = false;
+};
+
+class RelocationTableDecoder {
+public:
+  explicit RelocationTableDecoder(Limits limits = {});
+  bool decode_elf(const uint8_t *data, size_t size,
+                  const RelocationDecodeOptions &options,
+                  std::vector<Relocation> &output, Error &error) const;
+  bool decode_pe_base(const uint8_t *data, size_t size, uint64_t image_base,
+                      std::vector<Relocation> &output, Error &error) const;
+  bool decode_macho(const uint8_t *data, size_t size,
+                    const RelocationDecodeOptions &options,
+                    std::vector<Relocation> &output, Error &error) const;
+
+private:
+  Limits limits_;
+};
+
+struct LayoutRegion {
+  uint64_t source_offset = 0;
+  uint64_t source_size = 0;
+  uint64_t target_address = 0;
+  uint64_t target_size = 0;
+  uint64_t alignment = 1;
+  uint8_t permissions = permission_none;
+  std::string name;
+};
+
+struct LayoutPlan {
+  uint64_t image_begin = 0;
+  uint64_t image_end = 0;
+  uint64_t mapped_bytes = 0;
+  uint64_t file_bytes = 0;
+  std::vector<LayoutRegion> regions;
+  std::vector<std::string> warnings;
+};
+
+class LayoutPlanner {
+public:
+  explicit LayoutPlanner(Limits limits = {});
+  std::optional<LayoutPlan> plan(const BinaryImage &image,
+                                 uint64_t requested_base, bool merge_adjacent,
+                                 Error &error) const;
+
+private:
+  Limits limits_;
+};
+
 } // namespace binforge
 #endif

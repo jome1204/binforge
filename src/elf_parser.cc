@@ -153,6 +153,9 @@ ElfParser::parse(std::shared_ptr<const std::vector<uint8_t>> data,
     return std::nullopt;
   }
   ByteReader reader(data->data(), data->size(), order);
+  BinaryImage image;
+  uint64_t table_bytes = 0;
+  std::vector<RawSection> raw;
   if (!reader.seek(16))
     return std::nullopt;
   uint16_t type, machine;
@@ -188,7 +191,6 @@ ElfParser::parse(std::shared_ptr<const std::vector<uint8_t>> data,
     error = {ErrorCode::resource_limit, 0, "ELF table count exceeds limits"};
     return std::nullopt;
   }
-  uint64_t table_bytes = 0;
   if (!checked_multiply(section_entry_size, section_count, table_bytes) ||
       !range_inside(section_offset, table_bytes, data->size()) ||
       (section_count && section_entry_size < (wide ? 64u : 40u))) {
@@ -196,7 +198,7 @@ ElfParser::parse(std::shared_ptr<const std::vector<uint8_t>> data,
              "ELF section table is invalid"};
     return std::nullopt;
   }
-  std::vector<RawSection> raw(section_count);
+  raw.resize(section_count);
   for (uint32_t i = 0; i < section_count; ++i) {
     if (!reader.seek(section_offset + uint64_t(i) * section_entry_size) ||
         !read_section(reader, wide, raw[i]))
@@ -208,7 +210,6 @@ ElfParser::parse(std::shared_ptr<const std::vector<uint8_t>> data,
       return std::nullopt;
     }
   }
-  BinaryImage image;
   image.file_data = data;
   image.header.format = BinaryFormat::elf_like;
   image.header.word_size = wide ? WordSize::bits64 : WordSize::bits32;
@@ -337,6 +338,31 @@ ElfParser::parse(std::shared_ptr<const std::vector<uint8_t>> data,
       table_string(*data, raw[s.link], name, limits_.max_string_bytes,
                    symbol.name);
       image.symbols.push_back(std::move(symbol));
+    }
+  }
+  for (uint32_t section_index = 0; section_index < raw.size();
+       ++section_index) {
+    const RawSection &section = raw[section_index];
+    if (section.type != 4 && section.type != 9)
+      continue;
+    if (!section.size)
+      continue;
+    RelocationDecodeOptions options;
+    options.architecture = image.header.architecture;
+    options.word_size = image.header.word_size;
+    options.byte_order = image.header.byte_order;
+    options.target_section = section.info;
+    options.entry_size = section.entry_size;
+    options.explicit_addends = section.type == 4;
+    if (image.header.kind == BinaryKind::relocatable &&
+        section.info < image.sections.size())
+      options.base_address = image.sections[section.info].virtual_address;
+    RelocationTableDecoder decoder(limits_);
+    Error relocation_error;
+    if (!decoder.decode_elf(data->data() + section.offset, section.size,
+                            options, image.relocations, relocation_error)) {
+      error = relocation_error;
+      return std::nullopt;
     }
   }
   return image;

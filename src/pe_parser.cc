@@ -47,20 +47,6 @@ SectionKind pe_section_kind(std::string_view name, uint32_t flags) {
     return SectionKind::no_bits;
   return SectionKind::program_bits;
 }
-bool rva_to_file(const std::vector<Section> &sections, uint64_t rva,
-                 uint64_t size, uint64_t &offset) {
-  for (auto &s : sections) {
-    uint64_t span = std::max(s.file_size, s.memory_size);
-    if (rva >= s.virtual_address &&
-        range_inside(rva - s.virtual_address, size, span)) {
-      uint64_t delta = rva - s.virtual_address;
-      if (delta > s.file_size || size > s.file_size - delta)
-        return false;
-      return checked_add(s.file_offset, delta, offset);
-    }
-  }
-  return false;
-}
 } // namespace
 PeParser::PeParser(Limits l) : limits_(l) {}
 std::optional<BinaryImage>
@@ -240,6 +226,38 @@ PeParser::parse(std::shared_ptr<const std::vector<uint8_t>> data,
       if (step > symbol_count - i)
         break;
       i += step;
+    }
+  }
+  uint64_t directory_count_offset = optional_offset + (wide ? 108 : 92);
+  uint64_t directory_table_offset = optional_offset + (wide ? 112 : 96);
+  if (range_inside(directory_count_offset, 4, data->size())) {
+    r.seek(directory_count_offset);
+    uint32_t directory_count = 0;
+    r.read_u32(directory_count);
+    directory_count = std::min<uint32_t>(directory_count, 16);
+    if (directory_count > 5 &&
+        range_inside(directory_table_offset, uint64_t(directory_count) * 8,
+                     optional_offset + optional_size)) {
+      r.seek(directory_table_offset + 5 * 8);
+      uint32_t relocation_rva = 0;
+      uint32_t relocation_size = 0;
+      r.read_u32(relocation_rva);
+      r.read_u32(relocation_size);
+      if (relocation_size) {
+        AddressTranslator translator(image);
+        auto file = translator.rva_to_file(relocation_rva, relocation_size);
+        if (!file ||
+            !range_inside(file->file_offset, relocation_size, data->size())) {
+          error = {ErrorCode::invalid_relocation, relocation_rva,
+                   "PE base-relocation directory is outside file data"};
+          return std::nullopt;
+        }
+        RelocationTableDecoder decoder(limits_);
+        if (!decoder.decode_pe_base(data->data() + file->file_offset,
+                                    relocation_size, image_base,
+                                    image.relocations, error))
+          return std::nullopt;
+      }
     }
   }
   return image;

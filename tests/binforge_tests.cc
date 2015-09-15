@@ -78,6 +78,22 @@ static void analysis() {
   assert(report && report->instructions.size() == 4);
   assert(!report->blocks.empty());
 }
+static void indexes_and_relocations() {
+  auto bytes = minimal_elf();
+  binforge::Error error;
+  auto image =
+      binforge::BinaryParser().parse(bytes.data(), bytes.size(), error);
+  assert(image);
+  binforge::SymbolIndex index;
+  assert(index.build(*image, error));
+  auto plan = binforge::LayoutPlanner().plan(*image, 0x400000, true, error);
+  assert(plan);
+  uint8_t records[] = {0x00, 0x10, 0x00, 0x00, 0x0a, 0x30};
+  std::vector<binforge::Relocation> relocations;
+  assert(binforge::RelocationTableDecoder().decode_pe_base(
+             records, sizeof(records), 0x140000000, relocations, error) ==
+         false);
+}
 int main() {
   arithmetic();
   reader();
@@ -85,5 +101,6 @@ int main() {
   memory();
   disassemble();
   analysis();
+  indexes_and_relocations();
   std::cout << "all binforge tests passed\n";
 }

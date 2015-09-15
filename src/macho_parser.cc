@@ -177,6 +177,26 @@ MachOParser::parse(std::shared_ptr<const std::vector<uint8_t>> data,
                            : ((sflags & 0xff) == 1 ? SectionKind::no_bits
                                                    : SectionKind::program_bits);
         segment.sections.push_back(section.index);
+        uint64_t relocation_bytes = 0;
+        if (!checked_multiply(nreloc, 8, relocation_bytes) ||
+            !range_inside(reloff, relocation_bytes, data->size()) ||
+            nreloc > limits_.max_relocations - image.relocations.size()) {
+          error = {ErrorCode::invalid_relocation, reloff,
+                   "Mach-O relocation table is outside file or too large"};
+          return std::nullopt;
+        }
+        if (relocation_bytes) {
+          RelocationDecodeOptions options;
+          options.architecture = image.header.architecture;
+          options.word_size = image.header.word_size;
+          options.byte_order = image.header.byte_order;
+          options.target_section = section.index;
+          options.base_address = section.virtual_address;
+          RelocationTableDecoder decoder(limits_);
+          if (!decoder.decode_macho(data->data() + reloff, relocation_bytes,
+                                    options, image.relocations, error))
+            return std::nullopt;
+        }
         image.sections.push_back(std::move(section));
       }
       image.segments.push_back(std::move(segment));
