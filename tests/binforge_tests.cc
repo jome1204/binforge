@@ -1,4 +1,5 @@
 #include "binforge/binforge.h"
+#include <algorithm>
 #include <cassert>
 #include <iostream>
 static std::vector<uint8_t> minimal_elf() {
@@ -94,6 +95,124 @@ static void indexes_and_relocations() {
              records, sizeof(records), 0x140000000, relocations, error) ==
          false);
 }
+static binforge::BinaryImage built_image() {
+  binforge::BinaryImageBuilder builder;
+  binforge::Error error;
+  binforge::BuilderSection text;
+  text.name = ".text";
+  text.permissions = binforge::permission_read | binforge::permission_execute;
+  text.alignment = 16;
+  text.data = {0x90, 0xc3, 'h', 'e', 'l', 'l', 'o', 0};
+  assert(builder.add_section(std::move(text), error));
+  binforge::BuilderSection data;
+  data.name = ".data";
+  data.permissions = binforge::permission_read | binforge::permission_write;
+  data.alignment = 8;
+  data.data = {'w', 'o', 'r', 'l', 'd', 0};
+  data.zero_fill = 32;
+  assert(builder.add_section(std::move(data), error));
+  binforge::Symbol symbol;
+  symbol.name = "entry";
+  symbol.kind = binforge::SymbolKind::function;
+  symbol.binding = binforge::SymbolBinding::global;
+  symbol.value = 0x400000;
+  symbol.size = 2;
+  assert(builder.add_symbol(std::move(symbol), error));
+  auto image = builder.build(binforge::BuilderOptions{}, error);
+  assert(image && !error);
+  return *image;
+}
+static void manifests_and_diff() {
+  auto image = built_image();
+  binforge::Error error;
+  binforge::ImageManifestCodec codec;
+  auto bytes = codec.encode(image, binforge::ManifestOptions{}, error);
+  assert(!bytes.empty() && !error);
+  auto decoded = codec.decode(bytes.data(), bytes.size(), error);
+  assert(decoded && decoded->sections.size() == image.sections.size());
+  auto difference = binforge::ImageDiffer().compare(image, *decoded, error);
+  assert(difference.equivalent);
+  auto graph = binforge::SectionGraphAnalyzer().analyze(image, error);
+  assert(graph && graph->components.size() == image.sections.size());
+}
+static void snapshots_and_patches() {
+  binforge::AddressSpace memory;
+  binforge::Error error;
+  assert(memory.map(0x1000, 4096, 3, "data", error));
+  uint8_t initial[] = {1, 2, 3, 4};
+  assert(memory.write(0x1000, initial, sizeof(initial), error));
+  binforge::MemorySnapshotCodec snapshots;
+  auto snapshot = snapshots.capture(memory, true, error);
+  auto encoded = snapshots.encode(snapshot, error);
+  auto decoded = snapshots.decode(encoded.data(), encoded.size(), error);
+  assert(decoded);
+  binforge::AddressSpace restored;
+  assert(snapshots.restore(*decoded, restored, error));
+  uint8_t read[4]{};
+  assert(restored.read(0x1000, read, sizeof(read), error));
+  assert(std::equal(std::begin(initial), std::end(initial), std::begin(read)));
+  binforge::PatchPlan plan;
+  plan.name = "unit patch";
+  binforge::PatchOperation assertion;
+  assertion.kind = binforge::PatchOperationKind::assert_bytes;
+  assertion.address = 0x1000;
+  assertion.bytes = {1, 2};
+  plan.operations.push_back(assertion);
+  binforge::PatchOperation write;
+  write.kind = binforge::PatchOperationKind::write_integer;
+  write.address = 0x1002;
+  write.width = 2;
+  write.integer = 0xbeef;
+  plan.operations.push_back(write);
+  plan.bytes_written = 2;
+  auto result = binforge::PatchEngine().apply(plan, restored, error);
+  assert(result && result->operations_applied == 2);
+  auto patch_bytes = binforge::PatchEngine().encode(plan, error);
+  auto patch = binforge::PatchEngine().decode(patch_bytes.data(),
+                                              patch_bytes.size(), error);
+  assert(patch && patch->operations.size() == 2);
+}
+static void scanners_queries_and_reports() {
+  auto image = built_image();
+  binforge::Error error;
+  binforge::StringScanOptions scan_options;
+  scan_options.minimum_characters = 5;
+  auto strings = binforge::StringScanner().scan(image, scan_options, error);
+  assert(strings.size() >= 2);
+  binforge::SignatureScanner scanner;
+  binforge::BytePattern pattern;
+  pattern.name = "return";
+  pattern.bytes = {0xc3};
+  assert(scanner.add(std::move(pattern), error));
+  auto matches = scanner.scan(image, error);
+  assert(matches.size() == 1);
+  binforge::ImageQuery query;
+  query.entity = binforge::QueryEntity::section;
+  query.predicates.push_back({binforge::QueryField::permissions,
+                              binforge::QueryOperator::bitwise_contains,
+                              uint64_t(binforge::permission_execute)});
+  auto rows = binforge::ImageQueryEngine().execute(image, query, error);
+  assert(rows && rows->rows.size() == 1);
+  auto hardening = binforge::HardeningAnalyzer().analyze(image, error);
+  assert(hardening && !hardening->writable_executable);
+  binforge::ReportOptions report_options;
+  report_options.format = binforge::ReportFormat::json;
+  auto report =
+      binforge::BinaryReportWriter().write(image, report_options, error);
+  assert(report && report->find("\"sections\"") == std::string::npos);
+}
+static void fixed_disassemblers() {
+  binforge::Error error;
+  binforge::Instruction instruction;
+  uint8_t arm_nop[] = {0x1f, 0x20, 0x03, 0xd5};
+  assert(binforge::Arm64Disassembler().decode(arm_nop, sizeof(arm_nop), 0x1000,
+                                              instruction, error));
+  assert(instruction.mnemonic == "nop");
+  uint8_t riscv_ret[] = {0x67, 0x80, 0x00, 0x00};
+  assert(binforge::RiscVDisassembler().decode(riscv_ret, sizeof(riscv_ret),
+                                              0x2000, instruction, error));
+  assert(instruction.mnemonic == "ret");
+}
 int main() {
   arithmetic();
   reader();
@@ -102,5 +221,9 @@ int main() {
   disassemble();
   analysis();
   indexes_and_relocations();
+  manifests_and_diff();
+  snapshots_and_patches();
+  scanners_queries_and_reports();
+  fixed_disassemblers();
   std::cout << "all binforge tests passed\n";
 }

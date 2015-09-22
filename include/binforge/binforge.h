@@ -690,5 +690,600 @@ private:
   Limits limits_;
 };
 
+enum class ResourceKind {
+  unknown,
+  cursor,
+  bitmap,
+  icon,
+  menu,
+  dialog,
+  string_table,
+  font,
+  accelerator,
+  raw_data,
+  message_table,
+  version,
+  manifest
+};
+
+struct ResourceIdentifier {
+  std::optional<uint32_t> integer;
+  std::string name;
+  bool operator<(const ResourceIdentifier &other) const;
+};
+
+struct ResourceEntry {
+  ResourceIdentifier type;
+  ResourceIdentifier name;
+  ResourceIdentifier language;
+  ResourceKind kind = ResourceKind::unknown;
+  uint64_t file_offset = 0;
+  uint64_t size = 0;
+  uint32_t code_page = 0;
+  uint32_t checksum = 0;
+};
+
+struct ResourceReport {
+  std::vector<ResourceEntry> entries;
+  uint64_t total_bytes = 0;
+  uint32_t maximum_depth = 0;
+  std::vector<std::string> warnings;
+};
+
+class PeResourceParser {
+public:
+  explicit PeResourceParser(Limits limits = {});
+  std::optional<ResourceReport> parse(const BinaryImage &image,
+                                      uint64_t directory_rva,
+                                      uint64_t directory_size,
+                                      Error &error) const;
+
+private:
+  Limits limits_;
+};
+
+enum class UnwindOperation {
+  none,
+  push_register,
+  allocate_stack,
+  save_register,
+  set_frame_pointer,
+  restore_state,
+  finish
+};
+
+struct UnwindInstruction {
+  UnwindOperation operation = UnwindOperation::none;
+  uint32_t register_number = 0;
+  uint64_t offset = 0;
+  int64_t value = 0;
+};
+
+struct UnwindRecord {
+  uint64_t start_address = 0;
+  uint64_t end_address = 0;
+  uint64_t personality = 0;
+  uint64_t landing_pad = 0;
+  bool signal_frame = false;
+  std::vector<UnwindInstruction> instructions;
+};
+
+struct UnwindReport {
+  std::vector<UnwindRecord> records;
+  uint64_t covered_bytes = 0;
+  std::vector<std::string> warnings;
+};
+
+class UnwindParser {
+public:
+  explicit UnwindParser(Limits limits = {});
+  std::optional<UnwindReport>
+  parse_eh_frame(const uint8_t *data, size_t size, uint64_t section_address,
+                 WordSize word_size, ByteOrder order, Error &error) const;
+  std::optional<UnwindReport> parse_pe_functions(const uint8_t *data,
+                                                 size_t size,
+                                                 uint64_t image_base,
+                                                 Error &error) const;
+
+private:
+  Limits limits_;
+};
+
+enum class NoteValueKind { bytes, text, integer };
+struct BinaryNote {
+  std::string owner;
+  uint32_t type = 0;
+  NoteValueKind value_kind = NoteValueKind::bytes;
+  std::variant<std::vector<uint8_t>, std::string, uint64_t> value;
+  uint64_t file_offset = 0;
+};
+
+class NoteParser {
+public:
+  explicit NoteParser(Limits limits = {});
+  bool parse_elf(const uint8_t *data, size_t size, ByteOrder order,
+                 std::vector<BinaryNote> &notes, Error &error) const;
+  bool parse_macho_commands(const uint8_t *data, size_t size, ByteOrder order,
+                            std::vector<BinaryNote> &notes, Error &error) const;
+
+private:
+  Limits limits_;
+};
+
+struct ImportTableOptions {
+  uint64_t directory_rva = 0;
+  uint64_t directory_size = 0;
+  uint64_t image_base = 0;
+  WordSize word_size = WordSize::bits64;
+};
+
+class PeImportExportParser {
+public:
+  explicit PeImportExportParser(Limits limits = {});
+  bool parse_imports(const BinaryImage &image,
+                     const ImportTableOptions &options,
+                     std::vector<Import> &imports, Error &error) const;
+  bool parse_exports(const BinaryImage &image, uint64_t directory_rva,
+                     uint64_t directory_size, std::vector<Export> &exports,
+                     Error &error) const;
+
+private:
+  Limits limits_;
+};
+
+struct DynamicEntry {
+  int64_t tag = 0;
+  uint64_t value = 0;
+};
+
+struct DynamicReport {
+  std::vector<DynamicEntry> entries;
+  std::vector<std::string> needed_libraries;
+  std::optional<std::string> soname;
+  std::optional<std::string> run_path;
+  uint64_t string_table_address = 0;
+  uint64_t string_table_size = 0;
+  uint64_t symbol_table_address = 0;
+  uint64_t relocation_address = 0;
+  uint64_t relocation_size = 0;
+  bool bind_now = false;
+  bool symbolic = false;
+};
+
+class ElfDynamicParser {
+public:
+  explicit ElfDynamicParser(Limits limits = {});
+  std::optional<DynamicReport> parse(const BinaryImage &image,
+                                     const Section &dynamic_section,
+                                     Error &error) const;
+
+private:
+  Limits limits_;
+};
+
+struct ManifestOptions {
+  bool include_symbols = true;
+  bool include_relocations = true;
+  bool include_imports = true;
+  bool include_exports = true;
+  bool include_debug_summary = true;
+  bool include_checksums = true;
+};
+
+class ImageManifestCodec {
+public:
+  explicit ImageManifestCodec(Limits limits = {});
+  std::vector<uint8_t> encode(const BinaryImage &image,
+                              const ManifestOptions &options,
+                              Error &error) const;
+  std::optional<BinaryImage> decode(const uint8_t *data, size_t size,
+                                    Error &error) const;
+
+private:
+  Limits limits_;
+};
+
+enum class DifferenceKind {
+  header_changed,
+  section_added,
+  section_removed,
+  section_changed,
+  segment_added,
+  segment_removed,
+  segment_changed,
+  symbol_added,
+  symbol_removed,
+  symbol_changed,
+  import_added,
+  import_removed,
+  export_added,
+  export_removed,
+  relocation_changed
+};
+
+struct ImageDifference {
+  DifferenceKind kind = DifferenceKind::header_changed;
+  std::string identity;
+  std::string before;
+  std::string after;
+  uint64_t address = 0;
+};
+
+struct ImageDiffReport {
+  bool equivalent = false;
+  uint32_t additions = 0;
+  uint32_t removals = 0;
+  uint32_t modifications = 0;
+  std::vector<ImageDifference> differences;
+};
+
+class ImageDiffer {
+public:
+  explicit ImageDiffer(Limits limits = {});
+  ImageDiffReport compare(const BinaryImage &before, const BinaryImage &after,
+                          Error &error) const;
+
+private:
+  Limits limits_;
+};
+
+enum class PatchOperationKind {
+  write_bytes,
+  fill_bytes,
+  write_integer,
+  copy_bytes,
+  assert_bytes
+};
+
+struct PatchOperation {
+  PatchOperationKind kind = PatchOperationKind::write_bytes;
+  uint64_t address = 0;
+  uint64_t source_address = 0;
+  uint64_t length = 0;
+  uint64_t integer = 0;
+  uint8_t width = 0;
+  uint8_t fill = 0;
+  ByteOrder byte_order = ByteOrder::little;
+  std::vector<uint8_t> bytes;
+};
+
+struct PatchPlan {
+  std::string name;
+  uint32_t expected_checksum = 0;
+  std::vector<PatchOperation> operations;
+  uint64_t bytes_written = 0;
+};
+
+struct PatchResult {
+  uint32_t operations_applied = 0;
+  uint64_t bytes_written = 0;
+  uint32_t resulting_checksum = 0;
+};
+
+class PatchEngine {
+public:
+  explicit PatchEngine(Limits limits = {});
+  bool validate(const PatchPlan &plan, const AddressSpace &memory,
+                Error &error) const;
+  std::optional<PatchResult> apply(const PatchPlan &plan, AddressSpace &memory,
+                                   Error &error) const;
+  std::vector<uint8_t> encode(const PatchPlan &plan, Error &error) const;
+  std::optional<PatchPlan> decode(const uint8_t *data, size_t size,
+                                  Error &error) const;
+
+private:
+  Limits limits_;
+};
+
+enum class StringEncoding { ascii, utf8, utf16_little, utf16_big };
+struct ExtractedString {
+  uint64_t file_offset = 0;
+  uint64_t virtual_address = 0;
+  StringEncoding encoding = StringEncoding::ascii;
+  std::string value;
+  uint32_t byte_length = 0;
+  uint32_t section_index = UINT32_MAX;
+};
+
+struct StringScanOptions {
+  uint32_t minimum_characters = 4;
+  uint32_t maximum_characters = 4096;
+  uint32_t maximum_results = 100000;
+  bool ascii = true;
+  bool utf8 = true;
+  bool utf16_little = true;
+  bool utf16_big = false;
+  bool require_terminator = false;
+};
+
+class StringScanner {
+public:
+  explicit StringScanner(Limits limits = {});
+  std::vector<ExtractedString> scan(const BinaryImage &image,
+                                    const StringScanOptions &options,
+                                    Error &error) const;
+
+private:
+  Limits limits_;
+};
+
+struct BytePattern {
+  std::string name;
+  std::vector<uint8_t> bytes;
+  std::vector<uint8_t> mask;
+  uint64_t alignment = 1;
+};
+
+struct PatternMatch {
+  std::string pattern;
+  uint64_t file_offset = 0;
+  uint64_t virtual_address = 0;
+  uint32_t section_index = UINT32_MAX;
+};
+
+class SignatureScanner {
+public:
+  explicit SignatureScanner(Limits limits = {});
+  bool add(BytePattern pattern, Error &error);
+  std::vector<PatternMatch> scan(const BinaryImage &image, Error &error) const;
+  void clear();
+
+private:
+  Limits limits_;
+  std::vector<BytePattern> patterns_;
+};
+
+class Arm64Disassembler final : public Disassembler {
+public:
+  bool decode(const uint8_t *data, size_t size, uint64_t address,
+              Instruction &instruction, Error &error) const override;
+};
+
+class RiscVDisassembler final : public Disassembler {
+public:
+  explicit RiscVDisassembler(bool compressed = true);
+  bool decode(const uint8_t *data, size_t size, uint64_t address,
+              Instruction &instruction, Error &error) const override;
+
+private:
+  bool compressed_;
+};
+
+struct BuilderSection {
+  std::string name;
+  SectionKind kind = SectionKind::program_bits;
+  uint8_t permissions = permission_read;
+  uint64_t alignment = 1;
+  std::vector<uint8_t> data;
+  uint64_t zero_fill = 0;
+};
+
+struct BuilderOptions {
+  BinaryFormat format = BinaryFormat::elf_like;
+  BinaryKind kind = BinaryKind::executable;
+  Architecture architecture = Architecture::x86_64;
+  WordSize word_size = WordSize::bits64;
+  ByteOrder byte_order = ByteOrder::little;
+  uint64_t image_base = 0x400000;
+  uint64_t file_alignment = 16;
+  uint64_t memory_alignment = 4096;
+  bool separate_permissions = true;
+};
+
+class BinaryImageBuilder {
+public:
+  explicit BinaryImageBuilder(Limits limits = {});
+  bool add_section(BuilderSection section, Error &error);
+  bool add_symbol(Symbol symbol, Error &error);
+  bool add_import(Import imported, Error &error);
+  bool add_export(Export exported, Error &error);
+  bool add_relocation(Relocation relocation, Error &error);
+  std::optional<BinaryImage> build(const BuilderOptions &options,
+                                   Error &error) const;
+  void clear();
+
+private:
+  Limits limits_;
+  std::vector<BuilderSection> sections_;
+  std::vector<Symbol> symbols_;
+  std::vector<Import> imports_;
+  std::vector<Export> exports_;
+  std::vector<Relocation> relocations_;
+};
+
+struct SectionRelation {
+  uint32_t source = 0;
+  uint32_t target = 0;
+  std::string reason;
+  uint64_t references = 0;
+};
+
+struct SectionGraph {
+  std::vector<std::vector<uint32_t>> components;
+  std::vector<SectionRelation> relations;
+  std::vector<uint32_t> roots;
+  std::vector<uint32_t> orphans;
+  bool cyclic = false;
+};
+
+class SectionGraphAnalyzer {
+public:
+  explicit SectionGraphAnalyzer(Limits limits = {});
+  std::optional<SectionGraph> analyze(const BinaryImage &image,
+                                      Error &error) const;
+
+private:
+  Limits limits_;
+};
+
+struct SnapshotRegion {
+  uint64_t base = 0;
+  uint64_t size = 0;
+  uint8_t permissions = permission_none;
+  std::string name;
+  uint32_t checksum = 0;
+  std::vector<uint8_t> bytes;
+};
+
+struct MemorySnapshot {
+  uint32_t version = 1;
+  uint64_t mapped_bytes = 0;
+  std::vector<SnapshotRegion> regions;
+};
+
+class MemorySnapshotCodec {
+public:
+  explicit MemorySnapshotCodec(Limits limits = {});
+  MemorySnapshot capture(const AddressSpace &memory, bool include_bytes,
+                         Error &error) const;
+  bool restore(const MemorySnapshot &snapshot, AddressSpace &memory,
+               Error &error) const;
+  std::vector<uint8_t> encode(const MemorySnapshot &snapshot,
+                              Error &error) const;
+  std::optional<MemorySnapshot> decode(const uint8_t *data, size_t size,
+                                       Error &error) const;
+
+private:
+  Limits limits_;
+};
+
+enum class FindingSeverity { information, low, medium, high, critical };
+enum class FindingCategory {
+  malformed_structure,
+  writable_executable,
+  missing_hardening,
+  suspicious_layout,
+  suspicious_import,
+  suspicious_export,
+  high_entropy,
+  entry_point,
+  debug_information,
+  relocation_policy
+};
+
+struct HardeningFinding {
+  FindingSeverity severity = FindingSeverity::information;
+  FindingCategory category = FindingCategory::malformed_structure;
+  std::string title;
+  std::string detail;
+  uint64_t address = 0;
+  std::optional<uint32_t> section_index;
+};
+
+struct HardeningReport {
+  uint32_t score = 100;
+  bool position_independent = false;
+  bool non_executable_data = true;
+  bool writable_executable = false;
+  bool immediate_binding = false;
+  bool stack_protection = false;
+  bool control_flow_protection = false;
+  bool stripped = false;
+  std::vector<HardeningFinding> findings;
+};
+
+class HardeningAnalyzer {
+public:
+  explicit HardeningAnalyzer(Limits limits = {});
+  std::optional<HardeningReport> analyze(const BinaryImage &image,
+                                         Error &error) const;
+
+private:
+  Limits limits_;
+};
+
+enum class QueryEntity {
+  section,
+  segment,
+  symbol,
+  import_symbol,
+  export_symbol
+};
+enum class QueryField {
+  name,
+  library,
+  address,
+  size,
+  permissions,
+  kind,
+  binding,
+  ordinal
+};
+enum class QueryOperator {
+  equal,
+  not_equal,
+  less,
+  less_equal,
+  greater,
+  greater_equal,
+  contains,
+  starts_with,
+  bitwise_contains
+};
+
+struct QueryPredicate {
+  QueryField field = QueryField::name;
+  QueryOperator operation = QueryOperator::equal;
+  std::variant<uint64_t, std::string> value;
+};
+
+struct ImageQuery {
+  QueryEntity entity = QueryEntity::section;
+  std::vector<QueryPredicate> predicates;
+  uint32_t limit = 1000;
+  bool require_all = true;
+  bool ascending = true;
+};
+
+struct QueryRow {
+  uint32_t index = 0;
+  std::string identity;
+  uint64_t address = 0;
+  uint64_t size = 0;
+  std::map<std::string, std::string> attributes;
+};
+
+struct QueryResult {
+  uint64_t examined = 0;
+  bool truncated = false;
+  std::vector<QueryRow> rows;
+};
+
+class ImageQueryEngine {
+public:
+  explicit ImageQueryEngine(Limits limits = {});
+  std::optional<QueryResult> execute(const BinaryImage &image,
+                                     const ImageQuery &query,
+                                     Error &error) const;
+
+private:
+  Limits limits_;
+};
+
+enum class ReportFormat { text, json, json_lines };
+struct ReportOptions {
+  ReportFormat format = ReportFormat::text;
+  bool include_sections = true;
+  bool include_segments = true;
+  bool include_symbols = true;
+  bool include_imports = true;
+  bool include_exports = true;
+  bool include_relocations = true;
+  bool include_metrics = true;
+  bool include_hardening = true;
+  uint32_t maximum_items = 100000;
+};
+
+class BinaryReportWriter {
+public:
+  explicit BinaryReportWriter(Limits limits = {});
+  std::optional<std::string> write(const BinaryImage &image,
+                                   const ReportOptions &options,
+                                   Error &error) const;
+
+private:
+  Limits limits_;
+};
+
 } // namespace binforge
 #endif
