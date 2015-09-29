@@ -1,0 +1,5 @@
+# Fuzzing contracts
+
+`binary_parser_fuzzer` enters through signature detection and independently validates any accepted model. `binary_loader_fuzzer` adds address selection, mapping, copying and relocation cleanup. `relocation_fuzzer` constructs mapped memory plus normalized relocation records, reaching arithmetic and width checks without depending on a full container. `debug_info_fuzzer` exercises line-state and nested metadata parsers. `address_space_fuzzer` maps bytes to stateful map, unmap, protect, read and write operations. `manifest_fuzzer` decodes checksummed normalized images and drives analysis plus re-encoding. `patch_fuzzer` decodes operation plans and applies them transactionally to bounded simulated memory.
+
+Corpora are isolated because executable containers, debug streams and state sequences have incompatible grammars. Limits are deliberately smaller than library defaults to keep fuzz iterations deterministic. Findings should be reproduced with AddressSanitizer and UndefinedBehaviorSanitizer through the offline build. There are no intentional crash hooks or vulnerable production functions.
